@@ -5,6 +5,10 @@ let _smBar = null;
 let _smSections = [];
 let _smDuration = 0;
 
+// Display-only fallback: seeking needs a duration, not authored section markers.
+// Keep one stable array so unlabelled songs do not rebuild on every poll.
+const SM_FALLBACK_SECTIONS = [{ name: 'Song timeline', time: 0 }];
+
 const SM_COLORS = {
     'intro': '#3b82f6',
     'verse': '#22c55e',
@@ -48,6 +52,8 @@ function _smRemove() {
         _smBar.remove();
         _smBar = null;
     }
+    _smSections = [];
+    _smDuration = 0;
 }
 
 // The playback clock, across whichever backend is driving audio. getTime() is
@@ -116,32 +122,46 @@ function _smOnWheel(e) {
 
 function _smUpdate() {
     if (!_smBar) return;
-    const sections = highway.getSections();
+    const authoredSections = highway.getSections();
     const info = highway.getSongInfo();
     const t = highway.getTime();
 
-    if (!sections || sections.length === 0 || !info.duration) return;
+    const duration = info && info.duration;
+    if (!Number.isFinite(duration) || duration <= 0) {
+        // A loading/unloaded song must not retain another song's seek range.
+        if (_smDuration) _smBar.innerHTML = '';
+        _smSections = [];
+        _smDuration = 0;
+        return;
+    }
 
-    _smDuration = info.duration;
+    const sections = authoredSections && authoredSections.length
+        ? authoredSections : SM_FALLBACK_SECTIONS;
 
-    // Only rebuild if sections changed
-    if (sections !== _smSections) {
+    // Duration can arrive/change separately from the section array.
+    if (sections !== _smSections || duration !== _smDuration) {
         _smSections = sections;
+        _smDuration = duration;
         _smRender();
     }
 
     // Update playback position indicator
+    const position = Number.isFinite(t) ? Math.max(0, Math.min(_smDuration, t)) : 0;
     const marker = document.getElementById('sm-marker');
     if (marker && _smDuration > 0) {
-        const pct = (t / _smDuration) * 100;
+        const pct = (position / _smDuration) * 100;
         marker.style.left = pct + '%';
+    }
+    const timelineLabel = document.getElementById('sm-timeline-label');
+    if (timelineLabel) {
+        timelineLabel.textContent = `Song timeline · ${_smFmt(position)} / ${_smFmt(_smDuration)}`;
     }
 
     // Highlight active section
     const blocks = _smBar.querySelectorAll('.sm-block');
     let activeIdx = 0;
     for (let i = 0; i < _smSections.length; i++) {
-        if (_smSections[i].time <= t) activeIdx = i;
+        if (_smSections[i].time <= position) activeIdx = i;
         else break;
     }
     blocks.forEach((block, i) => {
@@ -153,6 +173,7 @@ function _smRender() {
     if (!_smBar || !_smSections.length || !_smDuration) return;
 
     let html = '';
+    const fallback = _smSections === SM_FALLBACK_SECTIONS;
 
     for (let i = 0; i < _smSections.length; i++) {
         const sec = _smSections[i];
@@ -165,9 +186,12 @@ function _smRender() {
         let label = sec.name.replace(/\d+$/, '').trim();
         label = label.charAt(0).toUpperCase() + label.slice(1);
 
+        const title = fallback
+            ? 'No section markers supplied. Click to seek; scroll to adjust position.'
+            : `${label} (${_smFmt(sec.time)})`;
         html += `<div class="sm-block" style="position:absolute;left:${startPct}%;width:${widthPct}%;top:0;bottom:0;background:${color};border-right:1px solid rgba(0,0,0,0.3);display:flex;align-items:center;justify-content:center;overflow:hidden;transition:opacity 0.15s;"
-            title="${label} (${_smFmt(sec.time)})">
-            <span style="font-size:9px;color:rgba(255,255,255,0.8);white-space:nowrap;text-overflow:ellipsis;overflow:hidden;padding:0 3px;">${label}</span>
+            title="${title}">
+            <span${fallback ? ' id="sm-timeline-label"' : ''} style="font-size:9px;color:rgba(255,255,255,0.8);white-space:nowrap;text-overflow:ellipsis;overflow:hidden;padding:0 3px;">${label}</span>
         </div>`;
     }
 
@@ -213,8 +237,6 @@ if (typeof module !== 'undefined' && module.exports) {
     const origPlaySong = window.playSong;
     window.playSong = async function(filename, arrangement) {
         _smRemove();
-        _smSections = [];
-        _smDuration = 0;
         await origPlaySong(filename, arrangement);
         _smCreate();
     };

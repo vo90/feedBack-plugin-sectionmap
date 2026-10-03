@@ -8,6 +8,7 @@ const path = require('node:path');
 
 function freshPlugin() {
     global.window = {};
+    delete global.highway;
     global.document = { getElementById: () => null };
     const file = path.join(__dirname, '..', 'screen.js');
     delete require.cache[require.resolve(file)];
@@ -38,6 +39,125 @@ class FakeAudio {
     addEventListener(type, fn) { this._listeners[type] = fn; }
     removeEventListener() {}
 }
+
+function timelineHarness(t, mod, sections = [], duration = 240, time = 60) {
+    const bar = new FakeBar();
+    const marker = { style: {} };
+    const label = { textContent: '' };
+    const song = { sections, duration, time };
+    const seeks = [];
+    let renders = 0;
+    let html = '';
+    Object.defineProperty(bar, 'innerHTML', {
+        get: () => html,
+        set: value => { html = value; renders++; },
+    });
+    global.highway = {
+        getSections: () => song.sections,
+        getSongInfo: () => ({ duration: song.duration }),
+        getTime: () => song.time,
+    };
+    global.document = {
+        getElementById: id => bar.innerHTML.includes(`id="${id}"`)
+            ? ({ 'sm-marker': marker, 'sm-timeline-label': label }[id] || null) : null,
+    };
+    global.window.feedBack = { seek: (time, reason) => seeks.push([time, reason]) };
+    mod._setState({ bar });
+    t.after(() => { delete global.highway; });
+    return { bar, marker, label, song, seeks, renders: () => renders };
+}
+
+for (const sections of [[], null, undefined]) {
+    test(`a song with ${JSON.stringify(sections)} sections has progress and working seeks`, t => {
+        const mod = freshPlugin();
+        const view = timelineHarness(t, mod, sections);
+        view.song.sections = sections;
+        mod._smUpdate();
+
+        assert.match(view.bar.innerHTML, /width:100%/);
+        assert.equal(view.marker.style.left, '25%');
+        assert.equal(view.label.textContent, 'Song timeline · 1:00 / 4:00');
+        assert.equal((view.bar.innerHTML.match(/class="sm-block"/g) || []).length, 1);
+        mod._smOnClick({ clientX: 250 });
+        mod._smOnWheel({ deltaY: -1, ctrlKey: true, preventDefault() {} });
+        assert.deepEqual(view.seeks, [[120, 'sectionmap-click'], [60.1, 'sectionmap-wheel']]);
+        if (sections) assert.deepEqual(sections, [], 'the source sections stay untouched');
+
+        view.song.time = 180;
+        view.song.sections = []; // Hosts may return a fresh empty array each poll.
+        mod._smUpdate();
+        assert.equal(view.marker.style.left, '75%');
+        assert.equal(view.label.textContent, 'Song timeline · 3:00 / 4:00');
+        assert.equal(view.renders(), 1, 'updating progress must not recreate the bar');
+    });
+}
+
+test('switching between labelled and unlabelled songs replaces the previous timeline', t => {
+    const mod = freshPlugin();
+    const authored = [{ name: 'Intro', time: 0 }, { name: 'Chorus', time: 60 }];
+    const view = timelineHarness(t, mod, authored, 120);
+    mod._smUpdate();
+    assert.match(view.bar.innerHTML, />Chorus</);
+    assert.doesNotMatch(view.bar.innerHTML, /sm-timeline-label/);
+
+    view.song.sections = [];
+    view.song.duration = 240;
+    mod._smUpdate();
+    assert.doesNotMatch(view.bar.innerHTML, />Chorus</);
+    assert.equal(view.label.textContent, 'Song timeline · 1:00 / 4:00');
+
+    view.song.sections = authored;
+    mod._smUpdate();
+    assert.match(view.bar.innerHTML, />Chorus</);
+    assert.match(view.bar.innerHTML, /left:25%/);
+    assert.doesNotMatch(view.bar.innerHTML, /sm-timeline-label/);
+    assert.deepEqual(authored, [{ name: 'Intro', time: 0 }, { name: 'Chorus', time: 60 }]);
+});
+
+test('duration changes resize the same section array and update the seek range', t => {
+    const mod = freshPlugin();
+    const view = timelineHarness(t, mod, [{ name: 'Intro', time: 0 }, { name: 'Verse', time: 60 }], 120);
+    mod._smUpdate();
+    assert.match(view.bar.innerHTML, /left:50%/);
+    view.song.duration = 240;
+    mod._smUpdate();
+    assert.match(view.bar.innerHTML, /left:25%/);
+    mod._smOnClick({ clientX: 250 });
+    assert.deepEqual(view.seeks, [[120, 'sectionmap-click']]);
+});
+
+test('unknown duration clears stale progress and disables seeks until timing arrives', t => {
+    const mod = freshPlugin();
+    const view = timelineHarness(t, mod);
+    for (const duration of [0, undefined, null, NaN, Infinity, -1]) {
+        view.song.duration = 240;
+        mod._smUpdate();
+        view.song.duration = duration;
+        mod._smUpdate();
+        assert.equal(view.bar.innerHTML, '');
+        mod._smOnClick({ clientX: 250 });
+        mod._smOnWheel({ deltaY: -1, preventDefault() {} });
+        assert.deepEqual(view.seeks, []);
+    }
+    view.song.duration = 300;
+    mod._smUpdate();
+    assert.equal(view.label.textContent, 'Song timeline · 1:00 / 5:00');
+    mod._smOnClick({ clientX: 250 });
+    assert.deepEqual(view.seeks, [[150, 'sectionmap-click']]);
+});
+
+test('fallback progress stays inside the bar during preroll and at the end', t => {
+    const mod = freshPlugin();
+    const view = timelineHarness(t, mod);
+    for (const [time, left, text] of [
+        [-3, '0%', '0:00'], [250, '100%', '4:00'], [NaN, '0%', '0:00'],
+    ]) {
+        view.song.time = time;
+        mod._smUpdate();
+        assert.equal(view.marker.style.left, left);
+        assert.equal(view.label.textContent, `Song timeline · ${text} / 4:00`);
+    }
+});
 
 test('_smGetColor matches by substring, case-insensitively', () => {
     const mod = freshPlugin();

@@ -7,6 +7,7 @@ A plugin for [Slopsmith](https://github.com/got-feedback/feedback) that shows a 
 - **Color-coded sections** — intro (blue), verse (green), chorus (yellow), bridge (purple), solo (red), breakdown (orange), outro (gray)
 - **Clickable navigation** — click anywhere on the bar to jump to that point in the song
 - **Playback position** — white marker shows current position, active section highlighted
+- **Songs without sections** — a neutral “Song timeline” bar shows elapsed/total time and supports click and scroll seeking whenever the song duration is known; no song-file changes are needed
 - **Always visible** — sits between the HUD and the highway, doesn't obstruct notes
 - **Automatic** — appears when you play a song, disappears when you leave the player
 
